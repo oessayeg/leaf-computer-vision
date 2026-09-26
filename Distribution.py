@@ -1,6 +1,8 @@
 import os
 import sys
 
+import matplotlib.pyplot as plt
+
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".webp"}
 
 
@@ -9,6 +11,7 @@ def is_image(filename):
 
 
 def load_categories(root_dir):
+    """Return {category: {subcategory: [image_paths]}}."""
     if not os.path.isdir(root_dir):
         raise NotADirectoryError(f"'{root_dir}' is not a valid directory")
 
@@ -33,10 +36,41 @@ def load_categories(root_dir):
             if is_image(f) and os.path.isfile(os.path.join(subdir_path, f))
         ]
 
-        bucket = categories.setdefault(category, {})
-        bucket[entry] = images
+        categories.setdefault(category, {})[entry] = images
 
     return categories
+
+
+def counts_by_subcategory(subcategories):
+    """Return (labels, counts) sorted by label."""
+    labels = sorted(subcategories.keys())
+    counts = [len(subcategories[label]) for label in labels]
+    return labels, counts
+
+
+def plot_category(category, subcategories):
+    labels, counts = counts_by_subcategory(subcategories)
+
+    fig, (pie_ax, bar_ax) = plt.subplots(1, 2, figsize=(12, 6))
+    fig.suptitle(f"{category} distribution", fontsize=14)
+
+    pie_ax.pie(counts, labels=labels, autopct="%1.1f%%", startangle=90)
+    pie_ax.set_title("Share per subcategory")
+
+    bar_ax.bar(labels, counts)
+    bar_ax.set_title("Image count per subcategory")
+    bar_ax.set_ylabel("Number of images")
+    bar_ax.tick_params(axis="x", rotation=30)
+
+    fig.tight_layout()
+
+
+def print_summary(categories):
+    for category, subcategories in categories.items():
+        total = sum(len(imgs) for imgs in subcategories.values())
+        print(f"{category}: {total} images across {len(subcategories)} subcategories")
+        for name, imgs in subcategories.items():
+            print(f"  {name}: {len(imgs)}")
 
 
 def main():
@@ -50,11 +84,16 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    for category, subdirs in categories.items():
-        total = sum(len(imgs) for imgs in subdirs.values())
-        print(f"{category}: {total} images across {len(subdirs)} subcategories")
-        for name, imgs in subdirs.items():
-            print(f"  {name}: {len(imgs)}")
+    if not categories:
+        print("No image subdirectories found.", file=sys.stderr)
+        sys.exit(1)
+
+    print_summary(categories)
+
+    for category, subcategories in categories.items():
+        plot_category(category, subcategories)
+
+    plt.show()
 
 
 if __name__ == "__main__":
