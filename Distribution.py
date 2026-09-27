@@ -27,7 +27,10 @@ def load_categories(root_dir):
         try:
             files = os.listdir(subdir_path)
         except PermissionError as e:
-            print(f"Warning: cannot read '{subdir_path}': {e}", file=sys.stderr)
+            print(
+                f"Warning: cannot read '{subdir_path}': {e}",
+                file=sys.stderr,
+            )
             continue
 
         images = [
@@ -68,7 +71,10 @@ def plot_category(category, subcategories):
 def print_summary(categories):
     for category, subcategories in categories.items():
         total = sum(len(imgs) for imgs in subcategories.values())
-        print(f"{category}: {total} images across {len(subcategories)} subcategories")
+        print(
+            f"{category}: {total} images "
+            f"across {len(subcategories)} subcategories"
+        )
         for name, imgs in subcategories.items():
             print(f"  {name}: {len(imgs)}")
 

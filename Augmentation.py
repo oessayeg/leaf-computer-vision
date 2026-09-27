@@ -54,7 +54,8 @@ def crop(img, rng=None):
     else:
         left = (w - cw) // 2
         top = (h - ch) // 2
-    return img.crop((left, top, left + cw, top + ch)).resize((w, h), Image.BILINEAR)
+    cropped = img.crop((left, top, left + cw, top + ch))
+    return cropped.resize((w, h), Image.BILINEAR)
 
 
 def distortion(img, rng=None):
@@ -109,7 +110,10 @@ def load_image(path):
 def build_output_path(src, technique, out_dir=None, suffix_index=None):
     directory, filename = os.path.split(src)
     stem, ext = os.path.splitext(filename)
-    tag = f"_{technique}" if suffix_index is None else f"_{technique}_{suffix_index}"
+    if suffix_index is None:
+        tag = f"_{technique}"
+    else:
+        tag = f"_{technique}_{suffix_index}"
     target_dir = out_dir if out_dir is not None else directory
     return os.path.join(target_dir, f"{stem}{tag}{ext}")
 
@@ -233,11 +237,26 @@ def run_directory(src_root, dst_root, seed):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Apply 6 augmentation techniques to an image, or balance a dataset directory."
+        description=(
+            "Apply 6 augmentation techniques to an image, "
+            "or balance a dataset directory."
+        )
     )
-    parser.add_argument("path", help="Image file (single-image mode) or directory (balancing mode)")
-    parser.add_argument("--dst", default="augmented_directory", help="Destination directory (directory mode)")
-    parser.add_argument("--seed", type=int, default=25, help="RNG seed for reproducible augmentation")
+    parser.add_argument(
+        "path",
+        help="Image file (single-image mode) or directory (balancing mode)",
+    )
+    parser.add_argument(
+        "--dst",
+        default="augmented_directory",
+        help="Destination directory (directory mode)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=25,
+        help="RNG seed for reproducible augmentation",
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.path):
