@@ -8,6 +8,7 @@ mccabe==0.7.0
 numpy==2.2.6
 opencv-python==4.11.0.86
 plantcv==4.11.3
+tensorflow==2.21.0
 packaging==26.3
 pillow==12.3.0
 pycodestyle==2.15.0
