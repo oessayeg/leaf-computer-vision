@@ -1,10 +1,3 @@
-"""Iteration 5: load the trained model and classify one image.
-
-Usage: python predict.py <image_path>
-
-Displays the original image + a transformed (masked) view side by side,
-with the predicted disease class printed as the figure title.
-"""
 import argparse
 import json
 import os

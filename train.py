@@ -1,10 +1,3 @@
-"""Iteration 2: leakage-safe augmentation pipeline.
-
-Splits the raw dataset into train/val BEFORE augmenting, augments only
-the training side (reusing Augmentation.py's techniques to balance classes),
-and copies validation originals as-is. Then trains a MobileNetV2 transfer-
-learning model and saves it under ./learnings/.
-"""
 import argparse
 import hashlib
 import json
