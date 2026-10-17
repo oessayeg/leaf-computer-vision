@@ -1,61 +1,164 @@
-"""Iteration 1: minimal end-to-end classifier.
+"""Iteration 2: leakage-safe augmentation pipeline.
 
-Loads images directly from a directory (one subfolder per class), splits
-train/val, builds a MobileNetV2 transfer-learning model, trains for a
-few epochs, and saves the model + class names into ./learnings/.
+Splits the raw dataset into train/val BEFORE augmenting, augments only
+the training side (reusing Augmentation.py's techniques to balance classes),
+and copies validation originals as-is. Then trains a MobileNetV2 transfer-
+learning model and saves it under ./learnings/.
 """
 import argparse
 import json
 import os
+import random
+import shutil
 import sys
 
 import tensorflow as tf
 from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 
+from Augmentation import TECHNIQUES, load_image, save_image
+from Distribution import is_image
+
 IMAGE_SIZE = (224, 224)
 BATCH_SIZE = 32
 EPOCHS = 3
 SEED = 13
+VAL_FRACTION = 0.2
+AUG_ROOT = "augmented_directory"
 LEARNINGS_DIR = "learnings"
 
 
-def load_datasets(data_dir):
-    """Return (train_ds, val_ds, class_names) built from one directory."""
+def enumerate_classes(data_dir):
+    """Return {class_name: [image_paths]} for every subdir of data_dir."""
+    classes = {}
+    for name in sorted(os.listdir(data_dir)):
+        sub = os.path.join(data_dir, name)
+        if not os.path.isdir(sub):
+            continue
+        images = [
+            os.path.join(sub, f)
+            for f in sorted(os.listdir(sub))
+            if is_image(f) and os.path.isfile(os.path.join(sub, f))
+        ]
+        if images:
+            classes[name] = images
+    return classes
+
+
+def stratified_split(classes, val_fraction, rng):
+    """Return (train_dict, val_dict) with per-class val_fraction held out."""
+    train, val = {}, {}
+    for cls, paths in classes.items():
+        shuffled = list(paths)
+        rng.shuffle(shuffled)
+        n_val = max(1, int(round(len(shuffled) * val_fraction)))
+        val[cls] = shuffled[:n_val]
+        train[cls] = shuffled[n_val:]
+    return train, val
+
+
+def copy_originals(paths, out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    for src in paths:
+        shutil.copy2(src, os.path.join(out_dir, os.path.basename(src)))
+
+
+def augment_to_balance(src_paths, out_dir, target_count, rng):
+    """Generate augmented variants until out_dir has `target_count` images.
+
+    Cycles through originals and picks a random unused technique per pass.
+    """
+    existing = target_count - len(src_paths)
+    if existing <= 0 or not src_paths:
+        return
+    n = len(src_paths)
+    remaining = [list(range(len(TECHNIQUES))) for _ in range(n)]
+    for order in remaining:
+        rng.shuffle(order)
+    pass_counts = [0] * n
+
+    for i in range(existing):
+        idx = i % n
+        src = src_paths[idx]
+        if not remaining[idx]:
+            remaining[idx] = list(range(len(TECHNIQUES)))
+            rng.shuffle(remaining[idx])
+            pass_counts[idx] += 1
+        technique_index = remaining[idx].pop()
+        technique_name, technique_fn = TECHNIQUES[technique_index]
+        try:
+            img = load_image(src)
+        except Exception as exc:
+            print(f"Warning: skipping '{src}': {exc}", file=sys.stderr)
+            continue
+        variant = technique_fn(img, rng)
+        stem, ext = os.path.splitext(os.path.basename(src))
+        out_name = f"{stem}_{technique_name}_{pass_counts[idx]}{ext}"
+        save_image(variant, os.path.join(out_dir, out_name))
+
+
+def materialize_dataset(data_dir, aug_root, rng):
+    """Build augmented_directory/{train,val}/<class>/ from scratch."""
+    if os.path.exists(aug_root):
+        shutil.rmtree(aug_root)
+    os.makedirs(aug_root)
+
+    classes = enumerate_classes(data_dir)
+    if not classes:
+        print(f"Error: no class subdirectories found in '{data_dir}'",
+              file=sys.stderr)
+        sys.exit(1)
+
+    train_split, val_split = stratified_split(classes, VAL_FRACTION, rng)
+
+    train_root = os.path.join(aug_root, "train")
+    val_root = os.path.join(aug_root, "val")
+
+    print(f"{'Class':<22} {'Train orig':>10} {'Train tgt':>10} "
+          f"{'Val':>6}")
+    train_target = max(len(p) for p in train_split.values())
+    for cls in sorted(classes):
+        train_out = os.path.join(train_root, cls)
+        val_out = os.path.join(val_root, cls)
+        copy_originals(train_split[cls], train_out)
+        copy_originals(val_split[cls], val_out)
+        augment_to_balance(train_split[cls], train_out, train_target, rng)
+        print(f"{cls:<22} {len(train_split[cls]):>10} {train_target:>10} "
+              f"{len(val_split[cls]):>6}")
+
+    print(f"\nAugmented dataset written to '{aug_root}/'.")
+    return train_root, val_root
+
+
+def load_datasets(train_dir, val_dir):
     train_ds = tf.keras.utils.image_dataset_from_directory(
-        data_dir,
-        validation_split=0.2,
-        subset="training",
-        seed=SEED,
+        train_dir,
         image_size=IMAGE_SIZE,
         batch_size=BATCH_SIZE,
         label_mode="int",
+        shuffle=True,
+        seed=SEED,
     )
     val_ds = tf.keras.utils.image_dataset_from_directory(
-        data_dir,
-        validation_split=0.2,
-        subset="validation",
-        seed=SEED,
+        val_dir,
         image_size=IMAGE_SIZE,
         batch_size=BATCH_SIZE,
         label_mode="int",
+        shuffle=False,
     )
     class_names = train_ds.class_names
+    assert class_names == val_ds.class_names, "class mismatch between splits"
 
-    # Apply MobileNetV2's preprocessing (scales pixel values to [-1, 1]).
     train_ds = train_ds.map(lambda x, y: (preprocess_input(x), y))
     val_ds = val_ds.map(lambda x, y: (preprocess_input(x), y))
 
-    # Prefetch for throughput.
     autotune = tf.data.AUTOTUNE
     train_ds = train_ds.cache().prefetch(autotune)
     val_ds = val_ds.cache().prefetch(autotune)
-
     return train_ds, val_ds, class_names
 
 
 def build_model(num_classes):
-    """MobileNetV2 base (frozen) + small classifier head."""
     base = MobileNetV2(
         input_shape=IMAGE_SIZE + (3,),
         include_top=False,
@@ -87,7 +190,7 @@ def save_artifacts(model, class_names, out_dir):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Train a leaf-disease classifier (Iteration 1)."
+        description="Train a leaf-disease classifier (Iteration 2)."
     )
     parser.add_argument(
         "directory",
@@ -96,18 +199,24 @@ def main():
     args = parser.parse_args()
 
     if not os.path.isdir(args.directory):
-        print(f"Error: '{args.directory}' is not a directory", file=sys.stderr)
+        print(f"Error: '{args.directory}' is not a directory",
+              file=sys.stderr)
         sys.exit(1)
 
-    print(f"Loading datasets from {args.directory!r} ...")
-    train_ds, val_ds, class_names = load_datasets(args.directory)
+    rng = random.Random(SEED)
+
+    print(f"Building augmented dataset from '{args.directory}'...")
+    train_dir, val_dir = materialize_dataset(args.directory, AUG_ROOT, rng)
+
+    print("\nLoading TF datasets...")
+    train_ds, val_ds, class_names = load_datasets(train_dir, val_dir)
     print(f"Classes ({len(class_names)}): {class_names}")
 
-    print("Building MobileNetV2 transfer-learning model ...")
+    print("\nBuilding MobileNetV2 transfer-learning model...")
     model = build_model(len(class_names))
     model.summary()
 
-    print(f"Training for {EPOCHS} epochs ...")
+    print(f"\nTraining for {EPOCHS} epochs...")
     history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS)
 
     final_val_acc = history.history["val_accuracy"][-1]
