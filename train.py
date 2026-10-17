@@ -6,11 +6,13 @@ and copies validation originals as-is. Then trains a MobileNetV2 transfer-
 learning model and saves it under ./learnings/.
 """
 import argparse
+import hashlib
 import json
 import os
 import random
 import shutil
 import sys
+import zipfile
 
 import tensorflow as tf
 from tensorflow.keras.applications import MobileNetV2
@@ -28,6 +30,8 @@ SEED = 13
 VAL_FRACTION = 0.2
 AUG_ROOT = "augmented_directory"
 LEARNINGS_DIR = "learnings"
+ZIP_PATH = "learnings.zip"
+SIGNATURE_PATH = "signature.txt"
 
 
 def enumerate_classes(data_dir):
@@ -246,6 +250,38 @@ def save_artifacts(model, class_names, out_dir):
         json.dump(class_names, f, indent=2)
 
 
+def _add_tree_to_zip(zf, root):
+    """Recursively add a directory tree to an open zipfile."""
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            path = os.path.join(dirpath, name)
+            arcname = os.path.relpath(path, start=".")
+            zf.write(path, arcname)
+
+
+def package_learnings(zip_path, signature_path):
+    """Zip learnings/ + augmented_directory/, then write sha1 to signature."""
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        _add_tree_to_zip(zf, LEARNINGS_DIR)
+        if os.path.isdir(AUG_ROOT):
+            _add_tree_to_zip(zf, AUG_ROOT)
+
+    sha1 = hashlib.sha1()
+    with open(zip_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            sha1.update(chunk)
+    digest = sha1.hexdigest()
+
+    with open(signature_path, "w") as f:
+        f.write(f"{digest}  {zip_path}\n")
+
+    size_mb = os.path.getsize(zip_path) / (1024 * 1024)
+    print(f"Wrote {zip_path} ({size_mb:.1f} MB)")
+    print(f"Wrote {signature_path} ({digest})")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Train a leaf-disease classifier (Iteration 2)."
@@ -293,6 +329,9 @@ def main():
 
     print(f"Saving artifacts to ./{LEARNINGS_DIR}/ ...")
     save_artifacts(model, class_names, LEARNINGS_DIR)
+
+    print("\nPackaging learnings + augmented dataset into zip...")
+    package_learnings(ZIP_PATH, SIGNATURE_PATH)
     print("Done.")
 
 

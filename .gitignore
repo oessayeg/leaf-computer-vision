@@ -4,3 +4,5 @@ __pycache__/
 images/
 augmented_directory/
 dst_all/
+learnings/
+learnings.zip
