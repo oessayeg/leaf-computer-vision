@@ -21,7 +21,9 @@ from Distribution import is_image
 
 IMAGE_SIZE = (224, 224)
 BATCH_SIZE = 32
-EPOCHS = 3
+EPOCHS = 20
+FINETUNE_EPOCHS = 5
+FINETUNE_UNFREEZE_LAYERS = 30
 SEED = 13
 VAL_FRACTION = 0.2
 AUG_ROOT = "augmented_directory"
@@ -178,7 +180,63 @@ def build_model(num_classes):
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"],
     )
-    return model
+    return model, base
+
+
+def training_callbacks():
+    return [
+        tf.keras.callbacks.EarlyStopping(
+            monitor="val_accuracy",
+            patience=4,
+            restore_best_weights=True,
+            verbose=1,
+        ),
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor="val_accuracy",
+            factor=0.5,
+            patience=2,
+            min_lr=1e-6,
+            verbose=1,
+        ),
+    ]
+
+
+def finetune(model, base, train_ds, val_ds):
+    """Unfreeze the top layers of MobileNetV2 and train at a tiny LR."""
+    base.trainable = True
+    for layer in base.layers[:-FINETUNE_UNFREEZE_LAYERS]:
+        layer.trainable = False
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"],
+    )
+    print(f"\nFine-tuning top {FINETUNE_UNFREEZE_LAYERS} layers "
+          f"for {FINETUNE_EPOCHS} epochs...")
+    return model.fit(
+        train_ds,
+        validation_data=val_ds,
+        epochs=FINETUNE_EPOCHS,
+        callbacks=training_callbacks(),
+    )
+
+
+def per_class_report(model, val_ds, class_names):
+    """Print accuracy per class to spot weak points."""
+    correct = [0] * len(class_names)
+    total = [0] * len(class_names)
+    for batch_x, batch_y in val_ds:
+        preds = tf.argmax(model.predict(batch_x, verbose=0), axis=1).numpy()
+        labels = batch_y.numpy()
+        for p, lbl in zip(preds, labels):
+            total[lbl] += 1
+            if p == lbl:
+                correct[lbl] += 1
+    print("\nPer-class validation accuracy:")
+    print(f"{'Class':<22} {'Correct':>8} {'Total':>8} {'Acc':>8}")
+    for name, c, t in zip(class_names, correct, total):
+        acc = (c / t) if t else 0.0
+        print(f"{name:<22} {c:>8} {t:>8} {acc:>8.4f}")
 
 
 def save_artifacts(model, class_names, out_dir):
@@ -213,13 +271,24 @@ def main():
     print(f"Classes ({len(class_names)}): {class_names}")
 
     print("\nBuilding MobileNetV2 transfer-learning model...")
-    model = build_model(len(class_names))
+    model, base = build_model(len(class_names))
     model.summary()
 
-    print(f"\nTraining for {EPOCHS} epochs...")
-    history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS)
+    print(f"\nStage 1: training head for up to {EPOCHS} epochs...")
+    history = model.fit(
+        train_ds,
+        validation_data=val_ds,
+        epochs=EPOCHS,
+        callbacks=training_callbacks(),
+    )
+    head_val_acc = max(history.history["val_accuracy"])
+    print(f"\nStage 1 best val accuracy: {head_val_acc:.4f}")
 
-    final_val_acc = history.history["val_accuracy"][-1]
+    if head_val_acc < 0.95:
+        finetune(model, base, train_ds, val_ds)
+
+    per_class_report(model, val_ds, class_names)
+    final_val_acc = model.evaluate(val_ds, verbose=0)[1]
     print(f"\nFinal validation accuracy: {final_val_acc:.4f}")
 
     print(f"Saving artifacts to ./{LEARNINGS_DIR}/ ...")
